@@ -29,7 +29,7 @@ def lambda_handler(event, context):
     params = {
         "app": app_id,
         "query": f'emp_id = "{emp_id}"',
-        "fields": ["attendance", "cost", "id"]  # idフィールドも取得
+        "fields": ["attendance", "cost", "name"]
     }
 
     try:
@@ -52,14 +52,14 @@ def lambda_handler(event, context):
         if not records:
             return {
                 "statusCode": 404,
-                "body": json.dumps({"message": f"No record found for emp_id: {emp_id}"}, ensure_ascii=False)
+                "body": json.dumps({"message": f"参加者一覧に存在しません。 社員番号: {emp_id}"}, ensure_ascii=False)
             }
 
         # レコード情報の取得
         record = records[0]
         attendance = record.get("attendance", {}).get("value", "未設定")
         cost = record.get("cost", {}).get("value", "未設定")
-        record_id = record.get("id")  # idを取得
+        name = record.get("name", {}).get("value", "未設定")
 
         # message変数の初期化
         message_attendance = ""
@@ -82,7 +82,7 @@ def lambda_handler(event, context):
             }
 
             update_url = f"https://{subdomain}.cybozu.com/k/v1/record.json"
-            update_response = requests.put(update_url, headers=headers, json=update_data)  # PUTメソッドを使用
+            update_response = requests.put(update_url, headers=headers, json=update_data)
             if update_response.status_code != 200:
                 return {
                     "statusCode": update_response.status_code,
@@ -91,26 +91,19 @@ def lambda_handler(event, context):
                         "details": update_response.text
                     }, ensure_ascii=False)
                 }
-            message_attendance = "Attendance status updated to 出席済み."
+            message_attendance = "出席済みに変更しました"
         elif attendance == "出席済み":
-            message_attendance = "Already marked as 出席済み."
+            message_attendance = "すでに出席済みの社員です"
 
         # costが集金済みの場合、その旨を通知
         if cost == "集金済み":
-            message_cost = "Payment already collected (集金済み)."
+            message_cost = "参加費を集金済みです"
         elif cost == "未集金":
-            message_cost = "Payment not collected yet (未集金)."
+            message_cost = "参加費が支払われていません"
+        elif cost == "集金不要":
+            message_cost = "集金不要な社員です"
 
-        return {
-            "statusCode": 200,
-            "body": json.dumps({
-                "emp_id": emp_id,
-                "attendance": attendance,
-                "cost": cost,
-                "attendance_message": message_attendance,
-                "cost_message": message_cost
-            }, ensure_ascii=False)
-        }
+        return f"名前: {name}\n社員番号: {emp_id}\n出席状況: {message_attendance}\n集金状況: {message_cost}"
 
     except Exception as e:
         print("Error occurred:", str(e))
