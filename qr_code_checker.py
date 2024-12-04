@@ -1,96 +1,120 @@
 import json
-import boto3
-import csv
-import io
-
-s3 = boto3.client('s3')
-
-def check_payment_and_mark_attendance(user_id, bucket_name, key):
-    csv_obj = s3.get_object(Bucket=bucket_name, Key=key)
-    csv_content = csv_obj['Body'].read().decode('utf-8').splitlines()
-    csv_reader = list(csv.reader(csv_content))
-    header = csv_reader[0]
-
-    # "出席済み" カラムがなければ追加
-    #if '出席済み' not in header:
-    #    header.append('出席済み')
-    
-    updated_csv = [header]
-    payment_status = False
-    already_marked = False
-    user_found = False  # Track if the user is found
-
-    for row in csv_reader[1:]:
-        if row[0] == user_id:
-            user_found = True  # User is found
-            if row[1] == '済み':
-                payment_status = True
-                # 出席済みマークが既にあるか確認
-                if row[header.index('出席済み')] == '〇':
-                    already_marked = True
-                else:
-                    # 出席済みマークがない場合に追加
-                    while len(row) < len(header):
-                        row.append('')
-                    row[header.index('出席済み')] = '〇'
-        updated_csv.append(row)
-
-    output = io.StringIO()
-    csv_writer = csv.writer(output)
-    csv_writer.writerows(updated_csv)
-    s3.put_object(Bucket=bucket_name, Key=key, Body=output.getvalue().encode('utf-8'))
-    
-    return payment_status, already_marked, user_found  # Return user_found
+import requests
+import os
 
 def lambda_handler(event, context):
-    try:
-        # event['body'] が存在し、空でないことを確認
-        if 'body' not in event or not event['body']:
-            return {
-                'statusCode': 400,
-                'body': json.dumps({"error": "リクエストボディが空です。"}, ensure_ascii=False)
-            }
-
-        # JSONパースの試行
-        body = json.loads(event['body'])
-        user_id = body.get('user_id')
-        print(body)
-
-        if not user_id:
-            return {
-                'statusCode': 400,
-                'body': json.dumps({"error": "user_id が指定されていません。"}, ensure_ascii=False)
-            }
-
-        bucket_name = 'kayata-qr'
-        key = 'attendance_list.csv'
-
-        # 支払い状況と出席済みかどうかを確認
-        payment_status, already_marked, user_found = check_payment_and_mark_attendance(user_id, bucket_name, key)
-
-        if not user_found:  # Check if user is not found
-            return {
-                'statusCode': 404,
-                'body': json.dumps({"error": "ユーザーが見つかりません。"}, ensure_ascii=False)
-            }
-        elif already_marked:
-            return {
-                'statusCode': 200,
-                'body': json.dumps({"status": "ALREADY_MARKED", "message": "既に出席済みです。"}, ensure_ascii=False)
-            }
-        elif payment_status:
-            return {
-                'statusCode': 200,
-                'body': json.dumps({"status": "OK", "message": "支払い済みで出席マークを追加しました。"}, ensure_ascii=False)
-            }
-        else:
-            return {
-                'statusCode': 200,
-                'body': json.dumps({"status": "STOP", "message": "支払いが完了していません。"}, ensure_ascii=False)
-            }
-
-    except json.JSONDecodeError:
+    emp_id = event.get('emp_id')
+    if not emp_id:
         return {
-            'statusCode': 400,
-            'body': json.dumps({"error": "無効なJSON形式です。"}, ensure_ascii=False)
+            "statusCode": 400,
+            "body": json.dumps({"message": "emp_id is required"})
+        }
+
+    # 環境変数からkintoneの設定を取得
+    subdomain = os.getenv('KINTONE_SUBDOMAIN')  # kintone のサブドメイン
+    api_key = os.getenv('KINTONE_API_KEY')  # API キー
+    app_id = os.getenv('KINTONE_APP_ID')  # kintone アプリの ID
+
+    if not subdomain or not api_key or not app_id:
+        return {
+            "statusCode": 500,
+            "body": json.dumps({"message": "Kintone environment variables are not set properly"})
+        }
+
+    headers = {
+        "X-Cybozu-API-Token": api_key,
+    }
+
+    # クエリを指定
+    params = {
+        "app": app_id,
+        "query": f'emp_id = "{emp_id}"',
+        "fields": ["attendance", "cost", "id"]  # idフィールドも取得
+    }
+
+    try:
+        # APIにGETリクエストを送信
+        api_url = f"https://{subdomain}.cybozu.com/k/v1/records.json"
+        response = requests.get(api_url, headers=headers, params=params)
+
+        if response.status_code != 200:
+            return {
+                "statusCode": response.status_code,
+                "body": json.dumps({
+                    "message": "Error fetching data from kintone",
+                    "details": response.text
+                }, ensure_ascii=False)
+            }
+
+        # レスポンスの処理
+        response_data = response.json()
+        records = response_data.get("records", [])
+        if not records:
+            return {
+                "statusCode": 404,
+                "body": json.dumps({"message": f"No record found for emp_id: {emp_id}"}, ensure_ascii=False)
+            }
+
+        # レコード情報の取得
+        record = records[0]
+        attendance = record.get("attendance", {}).get("value", "未設定")
+        cost = record.get("cost", {}).get("value", "未設定")
+        record_id = record.get("id")  # idを取得
+
+        # message変数の初期化
+        message_attendance = ""
+        message_cost = ""
+
+        # attendanceが未出席の場合、出席済みに変更
+        if attendance == "未出席":
+            # Kintoneのレコードを更新 (PUTメソッド)
+            update_data = {
+                "app": app_id,
+                "updateKey": {
+                    "field": "emp_id",  # emp_idを更新キーとして使用
+                    "value": emp_id
+                },
+                "record": {
+                    "attendance": {
+                        "value": "出席済み"
+                    }
+                }
+            }
+
+            update_url = f"https://{subdomain}.cybozu.com/k/v1/record.json"
+            update_response = requests.put(update_url, headers=headers, json=update_data)  # PUTメソッドを使用
+            if update_response.status_code != 200:
+                return {
+                    "statusCode": update_response.status_code,
+                    "body": json.dumps({
+                        "message": "Error updating attendance",
+                        "details": update_response.text
+                    }, ensure_ascii=False)
+                }
+            message_attendance = "Attendance status updated to 出席済み."
+        elif attendance == "出席済み":
+            message_attendance = "Already marked as 出席済み."
+
+        # costが集金済みの場合、その旨を通知
+        if cost == "集金済み":
+            message_cost = "Payment already collected (集金済み)."
+        elif cost == "未集金":
+            message_cost = "Payment not collected yet (未集金)."
+
+        return {
+            "statusCode": 200,
+            "body": json.dumps({
+                "emp_id": emp_id,
+                "attendance": attendance,
+                "cost": cost,
+                "attendance_message": message_attendance,
+                "cost_message": message_cost
+            }, ensure_ascii=False)
+        }
+
+    except Exception as e:
+        print("Error occurred:", str(e))
+        return {
+            "statusCode": 500,
+            "body": json.dumps({"message": "An error occurred", "error": str(e)}, ensure_ascii=False)
         }
