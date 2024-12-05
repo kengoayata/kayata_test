@@ -3,7 +3,7 @@ import json
 import csv
 
 # emp_id.csvファイルを開く
-with open('emp_id.csv', newline='') as csvfile:
+with open('emp_id.csv', newline='', encoding='shift_jis') as csvfile:  # 適切なエンコーディングを指定
     reader = csv.DictReader(csvfile)
     for row in reader:
         emp_id = row['emp_id']  # 各行のemp_idを取得
