@@ -30,5 +30,5 @@ with open('emp_id.csv', newline='', encoding='shift_jis') as csvfile:  # 適切�
 
         # 画像ファイルとして保存
         img = qr.make_image(fill_color="black", back_color="white")
-        img.save(f"{emp_id}_qr.png")
-        print(f"QRコードを生成しました: {emp_id}_qr.png")
+        img.save(f"{emp_id}_{name}_qr.png")
+        print(f"QRコードを生成しました: {emp_id}_{name}_qr.png")
