@@ -1,2 +1,1 @@
-# kayata_test
-kayata_test
+# 忘年会用
